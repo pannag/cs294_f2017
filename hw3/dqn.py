@@ -7,8 +7,14 @@ import tensorflow                as tf
 import tensorflow.contrib.layers as layers
 from collections import namedtuple
 from dqn_utils import *
+from tensorflow.python.client import timeline
+import logging
+import time
+
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
+logging.basicConfig(stream=sys.stderr, level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 def learn(env,
           q_func,
@@ -80,13 +86,19 @@ def learn(env,
     ###############
     # BUILD MODEL #
     ###############
+    print("BUILD MODEL")
 
     if len(env.observation_space.shape) == 1:
         # This means we are running on low-dimensional observations (e.g. RAM)
         input_shape = env.observation_space.shape
+        print("input_shape: ", input_shape)
+        print("ph shape: ", [None] + list(input_shape))
     else:
         img_h, img_w, img_c = env.observation_space.shape
         input_shape = (img_h, img_w, frame_history_len * img_c)
+        logging.info("input_shape: ", input_shape)
+        logging.info("ph shape: ", [None] + list(input_shape))
+
     num_actions = env.action_space.n
 
     # set up placeholders
@@ -128,6 +140,20 @@ def learn(env,
     ######
     
     # YOUR CODE HERE
+    # obs = [batch, w, h, 4*c]
+    # *_q_values = [batch, num_actions]
+    curr_q_values = q_func(obs_t_float, num_actions, scope="q_curr")
+    target_q_values = q_func(obs_tp1_float, num_actions, scope="q_target")
+    # Actual Q[state, action] is by selecting action index from curr_q_values
+    # Q_exp[state, action] = r + gamma* max Q(next_state, action)
+    action_one_hot = tf.one_hot(indices=act_t_ph, depth=num_actions)
+    modeled_q_values = tf.reduce_sum(action_one_hot * curr_q_values, axis=1)
+    exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
+                               gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+    total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
+
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_curr")
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_target")
 
     ######
 
@@ -150,12 +176,18 @@ def learn(env,
     ###############
     # RUN ENV     #
     ###############
+    logging.info("RUN ENV")
     model_initialized = False
     num_param_updates = 0
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
+
+    options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+    run_metadata = tf.RunMetadata()
+    timing = time.time()
+
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -195,6 +227,46 @@ def learn(env,
         #####
         
         # YOUR CODE HERE
+        # Get the array of most recent frames from the environment
+        # Each element of shape (img_h, img_w, img_c * frame_len_history)
+        exploration_val= exploration.value(t)
+        #print("exploration_val: ", exploration_val, t)
+        # First check if we should just explore rather than running the network
+        if model_initialized is False or np.random.random_sample() <= exploration_val:
+            action = np.random.randint(0, num_actions)
+            logging.debug("1. Choosing random action: ", action)
+        else:
+            # Get the action based on our network.
+            logging.debug("1. Calculating network action: ")
+            recent_frames = replay_buffer.encode_recent_observation()[None]
+            # recent_frames = recent_frames.reshape([-1] + list(recent_frames.shape))
+            logging.debug("Calculating network action: Running session")
+            q_values = session.run(curr_q_values, 
+                                   feed_dict={obs_t_ph: recent_frames},
+                                   options=options,
+                                   run_metadata=run_metadata)
+            action = np.argmax(q_values)
+            logging.debug("Choosing network action: ", action)
+            # Create the Timeline object, and write it to a json file
+            
+            fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+            chrome_trace = fetched_timeline.generate_chrome_trace_format()
+            with open('timeline_choose_action.json', 'w') as f:
+                f.write(chrome_trace)
+            
+
+        # Step a single step
+        logging.debug("2. Stepping in env..")
+        last_obs, reward, done, info = env.step(action)
+        if done:
+            print("done! resetting env..")
+            last_obs = env.reset()
+        #print("Info:" , info)    
+        # Store the transition
+        logging.debug("Storing in replay buffer..", replay_buffer.num_in_buffer)
+        idx = replay_buffer.store_frame(last_obs)
+        frames = replay_buffer.encode_recent_observation()
+        replay_buffer.store_effect(idx, action, reward, done)
 
         #####
 
@@ -245,6 +317,43 @@ def learn(env,
             #####
             
             # YOUR CODE HERE
+            # Get a sample batch from replay buffer
+            logging.debug("3. Get a sample batch from replay buffer..", batch_size)
+            obs_t_batch, act_batch, rew_batch, next_obs_batch, done_mask_batch = replay_buffer.sample(batch_size)
+            # Step b initliaze all the vars
+            # not sure why we need the feed_dict for this!
+            if not model_initialized:
+                initialize_interdependent_variables(session, 
+                                                    tf.global_variables(), 
+                                                    feed_dict={obs_t_ph: obs_t_batch, 
+                                                               obs_tp1_ph: next_obs_batch})
+                model_initialized = True
+            # Step c Train the model!
+            lr_schedule = optimizer_spec.lr_schedule
+            learning_rate_ = lr_schedule.value(num_param_updates)
+            logging.debug("4. Running training...")
+            session.run(train_fn, 
+                        feed_dict={obs_t_ph: obs_t_batch,
+                                             act_t_ph: act_batch,
+                                             rew_t_ph: rew_batch,
+                                             obs_tp1_ph: next_obs_batch,
+                                             done_mask_ph: done_mask_batch,
+                                             learning_rate: learning_rate_},
+                        options=options,
+                        run_metadata=run_metadata)
+            # Create the Timeline object, and write it to a json file
+            """
+            fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+            chrome_trace = fetched_timeline.generate_chrome_trace_format()
+            with open('timeline_run_training.json', 'w') as f:
+                f.write(chrome_trace)
+            """
+
+            # Step d. Update the target network. 
+            if num_param_updates % target_update_freq  == 0:
+                logging.debug("5. Updating target network.")
+                session.run(update_target_fn)
+            num_param_updates += 1
 
             #####
 
@@ -254,11 +363,15 @@ def learn(env,
             mean_episode_reward = np.mean(episode_rewards[-100:])
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
-        if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
+        if t % LOG_EVERY_N_STEPS == 0: # and model_initialized:
             print("Timestep %d" % (t,))
+            print("Replay Buffer Size %d" % (replay_buffer.num_in_buffer,))
+            total_time = time.time() - timing
+            print("Total Time: ", total_time, " Mean: ", total_time/LOG_EVERY_N_STEPS)
             print("mean reward (100 episodes) %f" % mean_episode_reward)
             print("best mean reward %f" % best_mean_episode_reward)
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
             sys.stdout.flush()
+            timing = time.time()

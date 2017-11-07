@@ -14,19 +14,21 @@ from atari_wrappers import *
 
 def atari_model(img_in, num_actions, scope, reuse=False):
     # as described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
-    with tf.variable_scope(scope, reuse=reuse):
-        out = img_in
-        with tf.variable_scope("convnet"):
-            # original architecture
-            out = layers.convolution2d(out, num_outputs=32, kernel_size=8, stride=4, activation_fn=tf.nn.relu)
-            out = layers.convolution2d(out, num_outputs=64, kernel_size=4, stride=2, activation_fn=tf.nn.relu)
-            out = layers.convolution2d(out, num_outputs=64, kernel_size=3, stride=1, activation_fn=tf.nn.relu)
-        out = layers.flatten(out)
-        with tf.variable_scope("action_value"):
-            out = layers.fully_connected(out, num_outputs=512,         activation_fn=tf.nn.relu)
-            out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
+    with tf.device("/gpu:0"):
+        with tf.variable_scope(scope, reuse=reuse):
+            out = img_in
+            with tf.variable_scope("convnet"):
+                # original architecture
+                out = layers.convolution2d(out, num_outputs=32, kernel_size=8, stride=4, activation_fn=tf.nn.relu)
+                out = layers.convolution2d(out, num_outputs=64, kernel_size=4, stride=2, activation_fn=tf.nn.relu)
+                out = layers.convolution2d(out, num_outputs=64, kernel_size=3, stride=1, activation_fn=tf.nn.relu)
+    #        with tf.device("/cpu:0"):
+            out = layers.flatten(out)
+            with tf.variable_scope("action_value"):
+                out = layers.fully_connected(out, num_outputs=512,         activation_fn=tf.nn.relu)
+                out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
 
-        return out
+            return out
 
 def atari_learn(env,
                 session,
@@ -67,8 +69,8 @@ def atari_learn(env,
         session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
-        replay_buffer_size=1000000,
-        batch_size=32,
+        replay_buffer_size=100000,
+        batch_size=16,
         gamma=0.99,
         learning_starts=50000,
         learning_freq=4,
@@ -97,7 +99,11 @@ def get_session():
     tf.reset_default_graph()
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,
-        intra_op_parallelism_threads=1)
+        intra_op_parallelism_threads=1,
+        #log_device_placement=True,
+        allow_soft_placement=True)
+    tf_config.gpu_options.allow_growth = True
+    tf_config.gpu_options.per_process_gpu_memory_fraction = 0.40
     session = tf.Session(config=tf_config)
     print("AVAILABLE GPUS: ", get_available_gpus())
     return session
