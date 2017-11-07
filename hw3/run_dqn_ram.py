@@ -13,14 +13,15 @@ from atari_wrappers import *
 
 
 def atari_model(ram_in, num_actions, scope, reuse=False):
-    with tf.variable_scope(scope, reuse=reuse):
-        out = ram_in
-        #out = tf.concat(1,(ram_in[:,4:5],ram_in[:,8:9],ram_in[:,11:13],ram_in[:,21:22],ram_in[:,50:51], ram_in[:,60:61],ram_in[:,64:65]))
-        with tf.variable_scope("action_value"):
-            out = layers.fully_connected(out, num_outputs=256, activation_fn=tf.nn.relu)
-            out = layers.fully_connected(out, num_outputs=128, activation_fn=tf.nn.relu)
-            out = layers.fully_connected(out, num_outputs=64, activation_fn=tf.nn.relu)
-            out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
+    with tf.device("/gpu:0"):
+        with tf.variable_scope(scope, reuse=reuse):
+            out = ram_in
+            #out = tf.concat(1,(ram_in[:,4:5],ram_in[:,8:9],ram_in[:,11:13],ram_in[:,21:22],ram_in[:,50:51], ram_in[:,60:61],ram_in[:,64:65]))
+            with tf.variable_scope("action_value"):
+                out = layers.fully_connected(out, num_outputs=256, activation_fn=tf.nn.relu)
+                out = layers.fully_connected(out, num_outputs=128, activation_fn=tf.nn.relu)
+                out = layers.fully_connected(out, num_outputs=64, activation_fn=tf.nn.relu)
+                out = layers.fully_connected(out, num_outputs=num_actions, activation_fn=None)
 
         return out
 
@@ -63,13 +64,13 @@ def atari_learn(env,
         session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
-        replay_buffer_size=1000000,
+        replay_buffer_size=100000, # 1e6
         batch_size=32,
         gamma=0.99,
-        learning_starts=50000,
+        learning_starts=20000, # 50000
         learning_freq=4,
         frame_history_len=1,
-        target_update_freq=10000,
+        target_update_freq=1000, # 10000
         grad_norm_clipping=10
     )
     env.close()
@@ -94,6 +95,8 @@ def get_session():
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,
         intra_op_parallelism_threads=1)
+    tf_config.gpu_options.allow_growth = True
+    tf_config.gpu_options.per_process_gpu_memory_fraction = 0.80
     session = tf.Session(config=tf_config)
     print("AVAILABLE GPUS: ", get_available_gpus())
     return session
@@ -115,7 +118,7 @@ def main():
     seed = 0 # Use a seed of zero (you may want to randomize the seed!)
     env = get_env(seed)
     session = get_session()
-    atari_learn(env, session, num_timesteps=int(4e7))
+    atari_learn(env, session, num_timesteps=int(1e7)) # 4e7
 
 if __name__ == "__main__":
     main()
