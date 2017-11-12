@@ -148,8 +148,9 @@ def learn(env,
     # Q_exp[state, action] = r + gamma* max Q(next_state, action)
     action_one_hot = tf.one_hot(indices=act_t_ph, depth=num_actions)
     modeled_q_values = tf.reduce_sum(action_one_hot * curr_q_values, axis=1)
-    exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
-                               gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+#    exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
+ #                              gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+    exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
     total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
 
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_curr")
@@ -248,11 +249,11 @@ def learn(env,
             action = np.argmax(q_values)
             logging.debug("Choosing network action: ", action)
             # Create the Timeline object, and write it to a json file
-            
-            fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-            chrome_trace = fetched_timeline.generate_chrome_trace_format()
-            with open('timeline_choose_action.json', 'w') as f:
-                f.write(chrome_trace)
+            if t % LOG_EVERY_N_STEPS == 0:
+                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                with open('timeline_choose_action_%d.json' % t, 'w') as f:
+                    f.write(chrome_trace)
             
 
         # Step a single step
@@ -342,12 +343,13 @@ def learn(env,
                         options=options,
                         run_metadata=run_metadata)
             # Create the Timeline object, and write it to a json file
-            """
-            fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-            chrome_trace = fetched_timeline.generate_chrome_trace_format()
-            with open('timeline_run_training.json', 'w') as f:
-                f.write(chrome_trace)
-            """
+            if t % LOG_EVERY_N_STEPS == 0:
+
+                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                with open('timeline_run_training_%d.json' % t, 'w') as f:
+                    f.write(chrome_trace)
+            
 
             # Step d. Update the target network. 
             if num_param_updates % target_update_freq  == 0:
