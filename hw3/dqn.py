@@ -143,15 +143,23 @@ def learn(env,
     # obs = [batch, w, h, 4*c]
     # *_q_values = [batch, num_actions]
     curr_q_values = q_func(obs_t_float, num_actions, scope="q_curr")
+    q_values_summary = tf.summary.histogram("Actual Q Values", curr_q_values)
     target_q_values = q_func(obs_tp1_float, num_actions, scope="q_target")
     # Actual Q[state, action] is by selecting action index from curr_q_values
     # Q_exp[state, action] = r + gamma* max Q(next_state, action)
-    action_one_hot = tf.one_hot(indices=act_t_ph, depth=num_actions)
-    modeled_q_values = tf.reduce_sum(action_one_hot * curr_q_values, axis=1)
-#    exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
- #                              gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
-    exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
-    total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
+    with tf.name_scope("actual"):
+        action_one_hot = tf.one_hot(indices=act_t_ph, depth=num_actions)
+        modeled_q_values = tf.reduce_sum(action_one_hot * curr_q_values, axis=1)
+        # action_prob_summary = tf.summary.histogram("Actual action prob", modeled_q_values)
+        # action_summary = tf.summary.histogram("Actual action", act_t_ph)
+    with tf.name_scope("expected"):
+        exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
+                                   gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+    # with tf.name_scope("expected"):
+    #     exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
+    with tf.name_scope("loss"):
+        total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
+        tf.summary.scalar("Total error", total_error)
 
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_curr")
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_target")
@@ -159,10 +167,13 @@ def learn(env,
     ######
 
     # construct optimization op (with gradient clipping)
-    learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
-    optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
-    train_fn = minimize_and_clip(optimizer, total_error,
-                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+    with tf.name_scope("training"):
+        learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
+        tf.summary.scalar("Learning rate", learning_rate)
+
+        optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
+        train_fn = minimize_and_clip(optimizer, total_error,
+                     var_list=q_func_vars, clip_val=grad_norm_clipping)
 
     # update_target_fn will be called periodically to copy Q network to target Q network
     update_target_fn = []
@@ -185,10 +196,14 @@ def learn(env,
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
 
-    options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-    run_metadata = tf.RunMetadata()
-    timing = time.time()
 
+    # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
+    merged = tf.summary.merge_all()
+    train_writer = tf.summary.FileWriter('/tmp/atari_train',
+                                          session.graph)
+    test_writer = tf.summary.FileWriter('/tmp/atari_test', session.graph)
+
+    timing = time.time()
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -238,23 +253,31 @@ def learn(env,
             logging.debug("1. Choosing random action: ", action)
         else:
             # Get the action based on our network.
-            logging.debug("1. Calculating network action: ")
             recent_frames = replay_buffer.encode_recent_observation()[None]
             # recent_frames = recent_frames.reshape([-1] + list(recent_frames.shape))
-            logging.debug("Calculating network action: Running session")
-            q_values = session.run(curr_q_values, 
-                                   feed_dict={obs_t_ph: recent_frames},
-                                   options=options,
-                                   run_metadata=run_metadata)
+            logging.debug("1. Calculating network action: Running session")
+            if t % LOG_EVERY_N_STEPS == 0:
+                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                run_metadata = tf.RunMetadata()
+                q_summary, q_values = session.run([q_values_summary, curr_q_values], 
+                                      feed_dict={obs_t_ph: recent_frames},
+                                      options=options,
+                                      run_metadata=run_metadata)
+                test_writer.add_run_metadata(run_metadata, 'step%d' % t)
+                test_writer.add_summary(q_summary, t)
+                # Create the Timeline object, and write it to a json file
+
+                """
+                     fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                    chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                    with open('timeline_choose_action_%d.json' % t, 'w') as f:
+                        f.write(chrome_trace)
+                """
+            else:
+                q_values = session.run(curr_q_values, 
+                                       feed_dict={obs_t_ph: recent_frames})
             action = np.argmax(q_values)
             logging.debug("Choosing network action: ", action)
-            # Create the Timeline object, and write it to a json file
-            if t % LOG_EVERY_N_STEPS == 0:
-                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-                chrome_trace = fetched_timeline.generate_chrome_trace_format()
-                with open('timeline_choose_action_%d.json' % t, 'w') as f:
-                    f.write(chrome_trace)
-            
 
         # Step a single step
         logging.debug("2. Stepping in env..")
@@ -331,25 +354,39 @@ def learn(env,
                 model_initialized = True
             # Step c Train the model!
             lr_schedule = optimizer_spec.lr_schedule
-            learning_rate_ = lr_schedule.value(num_param_updates)
+            learning_rate_ = lr_schedule.value(t)
             logging.debug("4. Running training...")
-            session.run(train_fn, 
-                        feed_dict={obs_t_ph: obs_t_batch,
-                                             act_t_ph: act_batch,
-                                             rew_t_ph: rew_batch,
-                                             obs_tp1_ph: next_obs_batch,
-                                             done_mask_ph: done_mask_batch,
-                                             learning_rate: learning_rate_},
-                        options=options,
-                        run_metadata=run_metadata)
             # Create the Timeline object, and write it to a json file
             if t % LOG_EVERY_N_STEPS == 0:
-
+                """
                 fetched_timeline = timeline.Timeline(run_metadata.step_stats)
                 chrome_trace = fetched_timeline.generate_chrome_trace_format()
                 with open('timeline_run_training_%d.json' % t, 'w') as f:
                     f.write(chrome_trace)
-            
+                """
+                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                run_metadata = tf.RunMetadata()
+
+                summary, _ = session.run(
+                    [merged, train_fn],
+                    feed_dict={obs_t_ph: obs_t_batch,
+                        act_t_ph: act_batch,
+                        rew_t_ph: rew_batch,
+                        obs_tp1_ph: next_obs_batch,
+                        done_mask_ph: done_mask_batch,
+                        learning_rate: learning_rate_},
+                    options=options,
+                    run_metadata=run_metadata)
+                train_writer.add_run_metadata(run_metadata, 'step%d' % t)
+                train_writer.add_summary(summary, t)
+            else:
+                session.run(train_fn, 
+                feed_dict={obs_t_ph: obs_t_batch,
+                                     act_t_ph: act_batch,
+                                     rew_t_ph: rew_batch,
+                                     obs_tp1_ph: next_obs_batch,
+                                     done_mask_ph: done_mask_batch,
+                                     learning_rate: learning_rate_})
 
             # Step d. Update the target network. 
             if num_param_updates % target_update_freq  == 0:
