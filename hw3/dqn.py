@@ -144,6 +144,7 @@ def learn(env,
     # *_q_values = [batch, num_actions]
     curr_q_values = q_func(obs_t_float, num_actions, scope="q_curr")
     q_values_summary = tf.summary.histogram("Actual Q Values", curr_q_values)
+    next_action_q_values = q_func(obs_tp1_float, num_actions, scope="q_curr", reuse=True)
     target_q_values = q_func(obs_tp1_float, num_actions, scope="q_target")
     # Actual Q[state, action] is by selecting action index from curr_q_values
     # Q_exp[state, action] = r + gamma* max Q(next_state, action)
@@ -153,10 +154,16 @@ def learn(env,
         # action_prob_summary = tf.summary.histogram("Actual action prob", modeled_q_values)
         # action_summary = tf.summary.histogram("Actual action", act_t_ph)
     with tf.name_scope("expected"):
+        next_action = tf.argmax(next_action_q_values, axis=1)
+        next_action_one_hot = tf.one_hot(next_action, depth=num_actions, axis=-1)
+
         exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
-                                   gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
-    # with tf.name_scope("expected"):
-    #     exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
+                                   gamma *
+                                   tf.reduce_sum(target_q_values * next_action_one_hot,
+                                                 axis=1))
+        # exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) *
+        #                            gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+        # exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
     with tf.name_scope("loss"):
         total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
         tf.summary.scalar("Total error", total_error)
@@ -199,9 +206,9 @@ def learn(env,
 
     # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
     merged = tf.summary.merge_all()
-    train_writer = tf.summary.FileWriter('/tmp/atari_train',
+    train_writer = tf.summary.FileWriter('/tmp/atari_train_ddqn',
                                           session.graph)
-    test_writer = tf.summary.FileWriter('/tmp/atari_test', session.graph)
+    test_writer = tf.summary.FileWriter('/tmp/atari_test_ddqn', session.graph)
 
     timing = time.time()
 
