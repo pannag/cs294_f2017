@@ -64,7 +64,7 @@ def atari_learn(env,
         session=session,
         exploration=exploration_schedule,
         stopping_criterion=stopping_criterion,
-        replay_buffer_size=100000, # 1e6
+        replay_buffer_size=1000000, #1e6,
         batch_size=32,
         gamma=0.99,
         learning_starts=20000, # 50000
@@ -118,7 +118,7 @@ def main():
     seed = 0 # Use a seed of zero (you may want to randomize the seed!)
     env = get_env(seed)
     session = get_session()
-    atari_learn(env, session, num_timesteps=int(1e7)) # 4e7
+    atari_learn(env, session, num_timesteps=int(4e7))
 
 if __name__ == "__main__":
     main()
