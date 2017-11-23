@@ -29,7 +29,8 @@ def learn(env,
           learning_freq=4,
           frame_history_len=4,
           target_update_freq=10000,
-          grad_norm_clipping=10):
+          grad_norm_clipping=10,
+          double_dqn=False):
     """Run Deep Q-learning algorithm.
 
     You can specify your own convnet using q_func.
@@ -79,6 +80,8 @@ def learn(env,
         each update to the target Q network
     grad_norm_clipping: float or None
         If not None gradients' norms are clipped to this value.
+    double_dqn: boolean
+        If True, use double DQN Learning. Else nominal DQN Leanring.
     """
     assert type(env.observation_space) == gym.spaces.Box
     assert type(env.action_space)      == gym.spaces.Discrete
@@ -96,8 +99,8 @@ def learn(env,
     else:
         img_h, img_w, img_c = env.observation_space.shape
         input_shape = (img_h, img_w, frame_history_len * img_c)
-        logging.info("input_shape: ", input_shape)
-        logging.info("ph shape: ", [None] + list(input_shape))
+        print("input_shape: ", input_shape)
+        print("ph shape: ", [None] + list(input_shape))
 
     num_actions = env.action_space.n
 
@@ -144,8 +147,10 @@ def learn(env,
     # *_q_values = [batch, num_actions]
     curr_q_values = q_func(obs_t_float, num_actions, scope="q_curr")
     q_values_summary = tf.summary.histogram("Actual Q Values", curr_q_values)
-    next_action_q_values = q_func(obs_tp1_float, num_actions, scope="q_curr", reuse=True)
     target_q_values = q_func(obs_tp1_float, num_actions, scope="q_target")
+    if double_dqn:
+        print("Using Double DQN Learning!")
+        next_action_q_values = q_func(obs_tp1_float, num_actions, scope="q_curr", reuse=True)
     # Actual Q[state, action] is by selecting action index from curr_q_values
     # Q_exp[state, action] = r + gamma* max Q(next_state, action)
     with tf.name_scope("actual"):
@@ -154,16 +159,17 @@ def learn(env,
         # action_prob_summary = tf.summary.histogram("Actual action prob", modeled_q_values)
         # action_summary = tf.summary.histogram("Actual action", act_t_ph)
     with tf.name_scope("expected"):
-        next_action = tf.argmax(next_action_q_values, axis=1)
-        next_action_one_hot = tf.one_hot(next_action, depth=num_actions, axis=-1)
-
-        exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) * 
-                                   gamma *
-                                   tf.reduce_sum(target_q_values * next_action_one_hot,
-                                                 axis=1))
-        # exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) *
-        #                            gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
-        # exp_q_values = rew_t_ph + tf.cast(tf.logical_not(tf.equal(done_mask_ph, 1)), tf.float32) * gamma * tf.reduce_max(target_q_values, reduction_indices=[1])
+        if double_dqn:
+            assert(next_action_q_values is not None)
+            next_action = tf.argmax(next_action_q_values, axis=1)
+            next_action_one_hot = tf.one_hot(next_action, depth=num_actions, axis=-1)
+            exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) *
+                                       gamma *
+                                       tf.reduce_sum(target_q_values * next_action_one_hot,
+                                                     axis=1))
+        else:
+            exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) *
+                                       gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
     with tf.name_scope("loss"):
         total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
         tf.summary.scalar("Total error", total_error)
@@ -206,11 +212,13 @@ def learn(env,
 
     # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
     merged = tf.summary.merge_all()
-    train_writer = tf.summary.FileWriter('/tmp/atari_train_ddqn',
-                                          session.graph)
-    test_writer = tf.summary.FileWriter('/tmp/atari_test_ddqn', session.graph)
+    log_train_path = '/tmp/atari_train_ddqn' if double_dqn else '/tmp/atari_train'
+    log_test_path = '/tmp/atari_test_ddqn' if double_dqn else '/tmp/atari_test'
+    train_writer = tf.summary.FileWriter(log_train_path, session.graph)
+    test_writer = tf.summary.FileWriter(log_test_path, session.graph)
 
     timing = time.time()
+    episode_total_reward = 0
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -255,13 +263,16 @@ def learn(env,
         exploration_val= exploration.value(t)
         #print("exploration_val: ", exploration_val, t)
         # First check if we should just explore rather than running the network
-        if model_initialized is False or np.random.random_sample() <= exploration_val:
+        if not model_initialized or np.random.random_sample() <= exploration_val:
             action = np.random.randint(0, num_actions)
             logging.debug("1. Choosing random action: ", action)
         else:
             # Get the action based on our network.
+            # Adding [None] since we need to add the extra dimension for the batch.
+            # encode_recent_observations() gives out shape (84, 84, 4) whereas we
+            # need (?, 84, 84, 4). Adding [None] makes it (1, 84, 84, 4).
+            # Same as reshape([-1] + list(recent_frames.shape))
             recent_frames = replay_buffer.encode_recent_observation()[None]
-            # recent_frames = recent_frames.reshape([-1] + list(recent_frames.shape))
             logging.debug("1. Calculating network action: Running session")
             if t % LOG_EVERY_N_STEPS == 0:
                 options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -275,7 +286,7 @@ def learn(env,
                 # Create the Timeline object, and write it to a json file
 
                 """
-                     fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                    fetched_timeline = timeline.Timeline(run_metadata.step_stats)
                     chrome_trace = fetched_timeline.generate_chrome_trace_format()
                     with open('timeline_choose_action_%d.json' % t, 'w') as f:
                         f.write(chrome_trace)
@@ -288,16 +299,17 @@ def learn(env,
 
         # Step a single step
         logging.debug("2. Stepping in env..")
-        last_obs, reward, done, info = env.step(action)
+        idx = replay_buffer.store_frame(last_obs)
+        next_obs, reward, done, info = env.step(action)
+        logging.debug("Storing in replay buffer..", replay_buffer.num_in_buffer)
+        replay_buffer.store_effect(idx, action, reward, done)
+        episode_total_reward += reward
         if done:
-            print("done! resetting env..")
-            last_obs = env.reset()
+            print("Episode done! Time = ", t, ". Total episode reward = ", episode_total_reward, ". Resetting env...")
+            episode_total_reward = 0
+        last_obs = env.reset() if done else next_obs
         #print("Info:" , info)    
         # Store the transition
-        logging.debug("Storing in replay buffer..", replay_buffer.num_in_buffer)
-        idx = replay_buffer.store_frame(last_obs)
-        frames = replay_buffer.encode_recent_observation()
-        replay_buffer.store_effect(idx, action, reward, done)
 
         #####
 
@@ -388,12 +400,12 @@ def learn(env,
                 train_writer.add_summary(summary, t)
             else:
                 session.run(train_fn, 
-                feed_dict={obs_t_ph: obs_t_batch,
-                                     act_t_ph: act_batch,
-                                     rew_t_ph: rew_batch,
-                                     obs_tp1_ph: next_obs_batch,
-                                     done_mask_ph: done_mask_batch,
-                                     learning_rate: learning_rate_})
+                            feed_dict={obs_t_ph: obs_t_batch,
+                                       act_t_ph: act_batch,
+                                       rew_t_ph: rew_batch,
+                                       obs_tp1_ph: next_obs_batch,
+                                       done_mask_ph: done_mask_batch,
+                                       learning_rate: learning_rate_})
 
             # Step d. Update the target network. 
             if num_param_updates % target_update_freq  == 0:
