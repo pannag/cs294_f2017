@@ -10,6 +10,8 @@ from dqn_utils import *
 from tensorflow.python.client import timeline
 import logging
 import time
+import datetime
+import os
 
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
@@ -169,11 +171,11 @@ def learn(env,
                                                      axis=1))
         else:
             exp_q_values = rew_t_ph + ((1.0 - done_mask_ph) *
-                                       gamma * tf.reduce_max(target_q_values, reduction_indices=[1]))
+                                       gamma * tf.reduce_max(target_q_values, axis=1))
     with tf.name_scope("loss"):
-        total_error = tf.nn.l2_loss(modeled_q_values - exp_q_values)
+        total_error = tf.reduce_mean(tf.squared_difference(modeled_q_values, exp_q_values))
         tf.summary.scalar("Total error", total_error)
-
+     
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_curr")
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_target")
 
@@ -214,6 +216,18 @@ def learn(env,
     merged = tf.summary.merge_all()
     log_train_path = '/tmp/atari_train_ddqn' if double_dqn else '/tmp/atari_train'
     log_test_path = '/tmp/atari_test_ddqn' if double_dqn else '/tmp/atari_test'
+
+    def make_log_path(dir_path):
+        now = datetime.datetime.now()
+        timestr=now.strftime("%Y%m%d_%H%M")
+        file_path = os.path.join(dir_path, timestr)
+        directory = os.path.dirname(file_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        return file_path
+    log_train_path = make_log_path(log_train_path)
+    log_test_path = make_log_path(log_test_path)
+
     train_writer = tf.summary.FileWriter(log_train_path, session.graph)
     test_writer = tf.summary.FileWriter(log_test_path, session.graph)
 
@@ -299,9 +313,9 @@ def learn(env,
 
         # Step a single step
         logging.debug("2. Stepping in env..")
-        idx = replay_buffer.store_frame(last_obs)
         next_obs, reward, done, info = env.step(action)
         logging.debug("Storing in replay buffer..", replay_buffer.num_in_buffer)
+        idx = replay_buffer.store_frame(last_obs)
         replay_buffer.store_effect(idx, action, reward, done)
         episode_total_reward += reward
         if done:
@@ -386,8 +400,8 @@ def learn(env,
                 options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                 run_metadata = tf.RunMetadata()
 
-                summary, _ = session.run(
-                    [merged, train_fn],
+                summary, _, train_error_ = session.run(
+                    [merged, train_fn, total_error],
                     feed_dict={obs_t_ph: obs_t_batch,
                         act_t_ph: act_batch,
                         rew_t_ph: rew_batch,
@@ -408,10 +422,10 @@ def learn(env,
                                        learning_rate: learning_rate_})
 
             # Step d. Update the target network. 
+            num_param_updates += 1
             if num_param_updates % target_update_freq  == 0:
                 logging.debug("5. Updating target network.")
                 session.run(update_target_fn)
-            num_param_updates += 1
 
             #####
 
@@ -421,7 +435,7 @@ def learn(env,
             mean_episode_reward = np.mean(episode_rewards[-100:])
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
-        if t % LOG_EVERY_N_STEPS == 0: # and model_initialized:
+        if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
             print("Timestep %d" % (t,))
             print("Replay Buffer Size %d" % (replay_buffer.num_in_buffer,))
             total_time = time.time() - timing
@@ -431,5 +445,6 @@ def learn(env,
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            print("Training error %f" % train_error_)
             sys.stdout.flush()
             timing = time.time()
