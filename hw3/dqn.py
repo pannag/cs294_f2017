@@ -175,7 +175,7 @@ def learn(env,
     with tf.name_scope("loss"):
         total_error = tf.reduce_mean(tf.squared_difference(modeled_q_values, exp_q_values))
         tf.summary.scalar("Total error", total_error)
-     
+
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_curr")
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_target")
 
@@ -274,6 +274,7 @@ def learn(env,
         # YOUR CODE HERE
         # Get the array of most recent frames from the environment
         # Each element of shape (img_h, img_w, img_c * frame_len_history)
+        idx = replay_buffer.store_frame(last_obs)
         exploration_val= exploration.value(t)
         #print("exploration_val: ", exploration_val, t)
         # First check if we should just explore rather than running the network
@@ -315,7 +316,11 @@ def learn(env,
         logging.debug("2. Stepping in env..")
         next_obs, reward, done, info = env.step(action)
         logging.debug("Storing in replay buffer..", replay_buffer.num_in_buffer)
-        idx = replay_buffer.store_frame(last_obs)
+        # Note: don't put the store_frame() here. The encode_recent_observation()
+        # call has to be after store_frame and before store_effect() call.Else
+        # the algo does not converge. Leaving the commented out line here as a
+        # reminder.
+        # idx = replay_buffer.store_frame(last_obs)
         replay_buffer.store_effect(idx, action, reward, done)
         episode_total_reward += reward
         if done:
@@ -413,7 +418,7 @@ def learn(env,
                 train_writer.add_run_metadata(run_metadata, 'step%d' % t)
                 train_writer.add_summary(summary, t)
             else:
-                session.run(train_fn, 
+                session.run(train_fn,
                             feed_dict={obs_t_ph: obs_t_batch,
                                        act_t_ph: act_batch,
                                        rew_t_ph: rew_batch,
