@@ -8,6 +8,8 @@ import time
 import inspect
 from multiprocessing import Process
 
+tf.logging.set_verbosity(tf.logging.INFO)
+
 #============================================================================================#
 # Utilities
 #============================================================================================#
@@ -35,7 +37,16 @@ def build_mlp(
 
     with tf.variable_scope(scope):
         # YOUR_CODE_HERE
-        pass
+        layer = input_placeholder
+        for i in range(n_layers):
+            layer = tf.layers.dense(inputs=layer,
+                                 units=size,
+                                 activation=activation,
+                                 name='layer'+str(i))
+        output = tf.layers.dense(inputs=layer, 
+            units=output_size, activation=output_activation, name='output')
+    return output
+
 
 def pathlength(path):
     return len(path["reward"])
@@ -123,7 +134,8 @@ def train_PG(exp_name='',
         sy_ac_na = tf.placeholder(shape=[None, ac_dim], name="ac", dtype=tf.float32) 
 
     # Define a placeholder for advantages
-    sy_adv_n = TODO
+    # CODE
+    sy_adv_n = tf.placeholder(shape=[None], name="adv", dtype=tf.float32)
 
 
     #========================================================================================#
