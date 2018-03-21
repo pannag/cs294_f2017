@@ -179,9 +179,16 @@ def train_PG(exp_name='',
 
     if discrete:
         # YOUR_CODE_HERE
-        sy_logits_na = TODO
-        sy_sampled_ac = TODO # Hint: Use the tf.multinomial op
-        sy_logprob_n = TODO
+        # Takes in the observation and returns the logits for actions as per our policy net
+        sy_logits_na = build_mlp(input_placeholder=sys_ob_no, output_size=ac_dim, scope="Policy")
+        # Sample an action to be taken.
+        sy_sampled_ac = tf.multinomial(tf.log(sy_logits_na), 1)
+
+        # Figure out the probablity (as per our current policy) of the action that was actually
+        # taken.
+        action_one_hot = tf.one_hot(indices=sy_ac_na, depth=ac_dim)
+        action_taken_prob = tf.reduce_sum(action_one_hot * sy_logits_na, axis=1)
+        sy_logprob_n = tf.log(action_taken_prob)
 
     else:
         # YOUR_CODE_HERE
@@ -197,7 +204,7 @@ def train_PG(exp_name='',
     # Loss Function and Training Operation
     #========================================================================================#
 
-    loss = TODO # Loss function that we'll differentiate to get the policy gradient.
+    loss = sy_logprob_n * sy_adv_n # Loss function that we'll differentiate to get the policy gradient.
     update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
 
@@ -329,7 +336,20 @@ def train_PG(exp_name='',
         #====================================================================================#
 
         # YOUR_CODE_HERE
-        q_n = TODO
+        if reward_to_go is False:  # trajectory (path) based PG. 
+            # Get the reward for each path as the sum of rewards along the path.
+            # In this scheme, the reward Ret(tau) is the same for every timestamp along 
+            # the path.
+            # So just replicate the path reward for each timestamp along that path.
+            rewards_path_repl = [[np.sum(np.power(gamma, i) * rew for i, rew in enumerate(path["rewards"]))] * len(path) for path in paths]
+            # Concate the paths similar to ob_no and ac_na.
+            q_n = np.concatenate(rewards)
+        else if reward_to_go is True:
+            # for path in paths
+            #   path["rewards"] -> array with rewards.
+            #   np.power(gamma, i) * rew for (i, rew) 
+            q_n = TODO
+
 
         #====================================================================================#
         #                           ----------SECTION 5----------
