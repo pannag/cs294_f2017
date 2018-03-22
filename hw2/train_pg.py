@@ -345,10 +345,19 @@ def train_PG(exp_name='',
             # Concate the paths similar to ob_no and ac_na.
             q_n = np.concatenate(rewards)
         else if reward_to_go is True:
-            # for path in paths
-            #   path["rewards"] -> array with rewards.
-            #   np.power(gamma, i) * rew for (i, rew) 
-            q_n = TODO
+            discounted_rewards_paths = []
+            for path in paths
+                # path["rewards"] -> array with rewards. 
+                discounted_sum = 0
+                discounted_rewards = []
+                # go over the rewards in reverse order. multiply by gamma and add to previous sum 
+                # to get the next sum. This gets the intended rewards in the reverse order, so ultimately
+                # reverse the resulting array (or alternative would be to fill the array at 0 as we go.) 
+                for i, rew in enumerate(path['rewards'][::-1]): 
+                    discounted_sum = gamma * discounted_sum + rew
+                    discounted_rewards.append(discounted_sum)
+                discounted_rewards_paths.append(discounted_rewards_paths[::-1])
+            q_n = np.concatenate(discounted_rewards_paths)
 
 
         #====================================================================================#
@@ -379,7 +388,7 @@ def train_PG(exp_name='',
             # On the next line, implement a trick which is known empirically to reduce variance
             # in policy gradient methods: normalize adv_n to have mean zero and std=1. 
             # YOUR_CODE_HERE
-            pass
+            adv_n = (adv_n - np.mean(adv_n) / np.std(adv_n)
 
 
         #====================================================================================#
