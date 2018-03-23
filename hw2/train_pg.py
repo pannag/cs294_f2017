@@ -119,6 +119,9 @@ def train_PG(exp_name='',
     # Observation and action sizes
     ob_dim = env.observation_space.shape[0]
     ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
+    print("OB AND ACTION DIM=============")
+    print(ob_dim)
+    print(ac_dim)
 
     #========================================================================================#
     #                           ----------SECTION 4----------
@@ -180,16 +183,17 @@ def train_PG(exp_name='',
     if discrete:
         # YOUR_CODE_HERE
         # Takes in the observation and returns the logits for actions as per our policy net
-        sy_logits_na = build_mlp(input_placeholder=sys_ob_no, output_size=ac_dim, scope="Policy")
+        sy_logits_na = build_mlp(input_placeholder=sy_ob_no, output_size=ac_dim, scope="Discrete")
         # Sample an action to be taken.
-        sy_sampled_ac = tf.multinomial(tf.log(sy_logits_na), 1)
-
+        sy_sampled_ac = tf.squeeze(tf.multinomial(sy_logits_na, 1), [1])
+        tf.assert_rank(sy_logits_na, 2)
+        tf.assert_rank(sy_sampled_ac, 1)
         # Figure out the probablity (as per our current policy) of the action that was actually
         # taken.
         action_one_hot = tf.one_hot(indices=sy_ac_na, depth=ac_dim)
         action_taken_prob = tf.reduce_sum(action_one_hot * sy_logits_na, axis=1)
         sy_logprob_n = tf.log(action_taken_prob)
-
+        tf.assert_rank(sy_logprob_n, 1)
     else:
         # YOUR_CODE_HERE
         sy_mean = TODO
@@ -203,8 +207,8 @@ def train_PG(exp_name='',
     #                           ----------SECTION 4----------
     # Loss Function and Training Operation
     #========================================================================================#
-
-    loss = sy_logprob_n * sy_adv_n # Loss function that we'll differentiate to get the policy gradient.
+    # Note the -ve sign, since the remainder is the reward, whereas we are defining loss.
+    loss = -tf.reduce_mean(sy_logprob_n * sy_adv_n) # Loss function that we'll differentiate to get the policy gradient.
     update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
 
@@ -260,9 +264,13 @@ def train_PG(exp_name='',
                     env.render()
                     time.sleep(0.05)
                 obs.append(ob)
-                ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+                ac, logits = sess.run([sy_sampled_ac, sy_logits_na], feed_dict={sy_ob_no : ob[None]})
                 ac = ac[0]
                 acs.append(ac)
+                #print("OBS, ACTION, LOGITS")
+                #print(ob)
+                #print(ac)
+                #print(logits)
                 ob, rew, done, _ = env.step(ac)
                 rewards.append(rew)
                 steps += 1
@@ -341,19 +349,19 @@ def train_PG(exp_name='',
             # In this scheme, the reward Ret(tau) is the same for every timestamp along 
             # the path.
             # So just replicate the path reward for each timestamp along that path.
-            rewards_path_repl = [[np.sum(np.power(gamma, i) * rew for i, rew in enumerate(path["rewards"]))] * len(path) for path in paths]
+            rewards_path_repl = [[np.sum(np.power(gamma, i) * rew for i, rew in enumerate(path["reward"]))] * len(path["reward"]) for path in paths]
             # Concate the paths similar to ob_no and ac_na.
-            q_n = np.concatenate(rewards)
-        else if reward_to_go is True:
+            q_n = np.concatenate(rewards_path_repl)
+        else:
             discounted_rewards_paths = []
-            for path in paths
+            for path in paths:
                 # path["rewards"] -> array with rewards. 
                 discounted_sum = 0
                 discounted_rewards = []
                 # go over the rewards in reverse order. multiply by gamma and add to previous sum 
                 # to get the next sum. This gets the intended rewards in the reverse order, so ultimately
                 # reverse the resulting array (or alternative would be to fill the array at 0 as we go.) 
-                for i, rew in enumerate(path['rewards'][::-1]): 
+                for i, rew in enumerate(path['reward'][::-1]): 
                     discounted_sum = gamma * discounted_sum + rew
                     discounted_rewards.append(discounted_sum)
                 discounted_rewards_paths.append(discounted_rewards_paths[::-1])
@@ -388,7 +396,7 @@ def train_PG(exp_name='',
             # On the next line, implement a trick which is known empirically to reduce variance
             # in policy gradient methods: normalize adv_n to have mean zero and std=1. 
             # YOUR_CODE_HERE
-            adv_n = (adv_n - np.mean(adv_n) / np.std(adv_n)
+            adv_n = (adv_n - np.mean(adv_n)) / np.std(adv_n)
 
 
         #====================================================================================#
@@ -421,7 +429,12 @@ def train_PG(exp_name='',
         # and after an update, and then log them below. 
 
         # YOUR_CODE_HERE
-
+        print("q_n shape: ", q_n.shape)
+        print("ob_no shape: ", ob_no.shape)
+        print("ac_na shape: ", ac_na.shape)
+        update_, loss_, sy_logprob_n_ = sess.run([update_op, loss, sy_logprob_n], 
+                          feed_dict={sy_ob_no: ob_no, sy_ac_na: ac_na, sy_adv_n: q_n})
+        print("sy_logprob_n [Chosen action log prob] Shape: ", sy_logprob_n_.shape)
 
         # Log diagnostics
         returns = [path["reward"].sum() for path in paths]
@@ -432,6 +445,7 @@ def train_PG(exp_name='',
         logz.log_tabular("StdReturn", np.std(returns))
         logz.log_tabular("MaxReturn", np.max(returns))
         logz.log_tabular("MinReturn", np.min(returns))
+        logz.log_tabular("Loss", loss_)
         logz.log_tabular("EpLenMean", np.mean(ep_lengths))
         logz.log_tabular("EpLenStd", np.std(ep_lengths))
         logz.log_tabular("TimestepsThisBatch", timesteps_this_batch)
