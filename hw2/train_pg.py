@@ -188,12 +188,14 @@ def train_PG(exp_name='',
         sy_sampled_ac = tf.squeeze(tf.multinomial(sy_logits_na, 1), [1])
         tf.assert_rank(sy_logits_na, 2)
         tf.assert_rank(sy_sampled_ac, 1)
-        # Figure out the probablity (as per our current policy) of the action that was actually
+        # Figure out the log probablity (as per our current policy) of the action that was actually
         # taken.
         action_one_hot = tf.one_hot(indices=sy_ac_na, depth=ac_dim)
-        action_taken_prob = tf.reduce_sum(action_one_hot * sy_logits_na, axis=1)
-        sy_logprob_n = tf.log(action_taken_prob)
+        action_taken_logit = tf.reduce_sum(action_one_hot * sy_logits_na, axis=1)
+        normalizer = tf.reduce_sum(tf.exp(sy_logits_na), axis=1)
+        sy_logprob_n = action_taken_logit - tf.log(normalizer)
         tf.assert_rank(sy_logprob_n, 1)
+
     else:
         # YOUR_CODE_HERE
         sy_mean = TODO
@@ -355,16 +357,17 @@ def train_PG(exp_name='',
         else:
             discounted_rewards_paths = []
             for path in paths:
-                # path["rewards"] -> array with rewards. 
+                # path["rewards"] -> array with rewards.
                 discounted_sum = 0
                 discounted_rewards = []
                 # go over the rewards in reverse order. multiply by gamma and add to previous sum 
                 # to get the next sum. This gets the intended rewards in the reverse order, so ultimately
                 # reverse the resulting array (or alternative would be to fill the array at 0 as we go.) 
                 for i, rew in enumerate(path['reward'][::-1]): 
+                    # print('i, rew: ', i, rew)
                     discounted_sum = gamma * discounted_sum + rew
                     discounted_rewards.append(discounted_sum)
-                discounted_rewards_paths.append(discounted_rewards_paths[::-1])
+                discounted_rewards_paths.append(discounted_rewards[::-1])
             q_n = np.concatenate(discounted_rewards_paths)
 
 
