@@ -6,6 +6,7 @@ import scipy.signal
 import os
 import time
 import inspect
+import roboschool
 from multiprocessing import Process
 
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -198,12 +199,27 @@ def train_PG(exp_name='',
 
     else:
         # YOUR_CODE_HERE
-        sy_mean = TODO
-        sy_logstd = TODO # logstd should just be a trainable variable, not a network output.
-        sy_sampled_ac = TODO
-        sy_logprob_n = TODO  # Hint: Use the log probability under a multivariate gaussian. 
+        sy_mean = build_mlp(input_placeholder=sy_ob_no, output_size=ac_dim, scope="Continuous")
+        sy_logstd = tf.Variable(0.0, name="sy_logstd") # logstd should just be a trainable variable, not a network output.
+        # For sampling, we use a reparameterization trick. mu + sigma * z, where z ~ N(O, I)
 
-
+        # Hint: Use the log probability under a multivariate gaussian.
+        # For finding the probability of the action (multi-dimensional) that was actually taken, first
+        # define a normal distribution with the above mean and std. Note that this defines multiple scalar
+        # distributions with same variance. Equivalent of multi variate gaussian with diagonal covariance matrix
+        # with same diagonal value of std (independent variables).
+        # NOTE: we technically don't need the tf.exp() on the std, since we can assume that the variable is
+        # representing the std directly than its log. However, that introduces some numerical instability and
+        # leads to some nans in loss and actions.
+        dist = tf.distributions.Normal(loc = sy_mean, scale = tf.exp(sy_logstd))
+        # Since we are using independent Normal vars to represent a multivariate Gaussian with independent
+        # variables, to get the overall probablity, we have to multiply the individual probabilities
+        # obtained from the Normal.
+        # P(x1, x2) = P(x1) * P(x2). Thus summing in log domain.
+        sy_logprob_n = tf.reduce_sum(dist.log_prob(sy_ac_na), axis=1)
+        # sy_sampled_ac = sy_mean + sy_logstd * tf.random_normal(shape=[ac_dim])
+        sy_sampled_ac = dist.sample()
+        tf.assert_rank(sy_sampled_ac, 2)
 
     #========================================================================================#
     #                           ----------SECTION 4----------
@@ -266,13 +282,13 @@ def train_PG(exp_name='',
                     env.render()
                     time.sleep(0.05)
                 obs.append(ob)
-                ac, logits = sess.run([sy_sampled_ac, sy_logits_na], feed_dict={sy_ob_no : ob[None]})
+                ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
                 ac = ac[0]
                 acs.append(ac)
-                #print("OBS, ACTION, LOGITS")
+                #print("OBS, ACTION")
                 #print(ob)
                 #print(ac)
-                #print(logits)
+
                 ob, rew, done, _ = env.step(ac)
                 rewards.append(rew)
                 steps += 1
