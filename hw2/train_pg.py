@@ -220,6 +220,7 @@ def train_PG(exp_name='',
         # sy_sampled_ac = sy_mean + sy_logstd * tf.random_normal(shape=[ac_dim])
         sy_sampled_ac = dist.sample()
         tf.assert_rank(sy_sampled_ac, 2)
+        tf.assert_rank(sy_logprob_n, 1)
 
     #========================================================================================#
     #                           ----------SECTION 4----------
