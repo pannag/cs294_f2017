@@ -209,8 +209,8 @@ def train_PG(exp_name='',
         # distributions with same variance. Equivalent of multi variate gaussian with diagonal covariance matrix
         # with same diagonal value of std (independent variables).
         # NOTE: we technically don't need the tf.exp() on the std, since we can assume that the variable is
-        # representing the std directly than its log. However, that introduces some numerical instability and
-        # leads to some nans in loss and actions.
+        # representing the std directly than its log, and force > 0. However, that may introduce some numerical
+        # instability and leads to some nans in loss and actions.
         dist = tf.distributions.Normal(loc = sy_mean, scale = tf.exp(sy_logstd))
         # Since we are using independent Normal vars to represent a multivariate Gaussian with independent
         # variables, to get the overall probablity, we have to multiply the individual probabilities
@@ -246,7 +246,10 @@ def train_PG(exp_name='',
         # Define placeholders for targets, a loss function and an update op for fitting a 
         # neural network baseline. These will be used to fit the neural network baseline. 
         # YOUR_CODE_HERE
-        baseline_update_op = TODO
+        # Targets for the baseline will be provided by the paths collected from experience 
+        target_bn = tf.placeholder(shape=[None], name="target_bn", dtype=tf.float32)
+        loss_bn = tf.losses.mean_squared_error(target_bn, baseline_prediction)
+        baseline_update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss_bn)
 
 
     #========================================================================================#
@@ -401,8 +404,13 @@ def train_PG(exp_name='',
             # Hint #bl1: rescale the output from the nn_baseline to match the statistics
             # (mean and std) of the current or previous batch of Q-values. (Goes with Hint
             # #bl2 below.)
-
-            b_n = TODO
+            b_n_orig = sess.run(baseline_prediction, feed_dict={sy_ob_no: ob_no})
+            # b_n_orig is expected to be zero mean and std 1 since that is what we are targeting
+            # in the graph training. So scale with the q_n stats.
+            mean_q = np.mean(q_n)
+            std_q = np.std(q_n)
+            # now b_n should have mean of q_n and std of q_n.
+            b_n = b_n_orig * std_q + mean_q
             adv_n = q_n - b_n
         else:
             adv_n = q_n.copy()
@@ -435,7 +443,29 @@ def train_PG(exp_name='',
             # targets to have mean zero and std=1. (Goes with Hint #bl1 above.)
 
             # YOUR_CODE_HERE
-            pass
+            # Use the previous network weights to predict the baseline values for calculating 
+            # targets = reward[i] + gamma * b_n[i+1] (unless end of episode). This is like the
+            # TD(0) target [if we want Monte Carlo, then the targets will be q_n but that is
+            # going to be noisy].
+            # b_n should have mean and std same as that of q_n since we scaled that above
+            # before advantage normalization. reward[i] should come from the same distribution 
+            # as q_n. 
+            # 
+            q_values = []
+            j = 0
+            for path in paths:
+                path_reward = path["reward"]
+                path_obs = path["observation"]
+                for i in range(len(path_reward)):
+                    b_next = b_n[j+1] if i < len(path_reward)-1 else 0
+                    q_values.append(path_reward[i] + gamma * b_next)
+                    j = j + 1
+            # Now that we have the targets, we should scale them back to 0 mean and 1 std before
+            # setting it as target for the graph to backprop.
+            q_values = np.array(q_values)
+
+            targets_ = (q_values - np.mean(q_values)) / np.std(q_values)
+            sess.run(baseline_update_op, feed_dict={sy_ob_no: ob_no, target_bn: targets_})
 
         #====================================================================================#
         #                           ----------SECTION 4----------
